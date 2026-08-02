@@ -1,0 +1,8 @@
+# The database is generated - run `python seed_data.py` to recreate it.
+garage.db
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
