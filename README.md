@@ -7,8 +7,6 @@ querying the workshop database directly instead of guessing.
 Built as a learning project while working through Anthropic's Model Context
 Protocol material. The database is fictional; the point is the interface
 between the model and the business system, not the data behind it.
-I designed it and made the decisions;the code was written with Claude Code,
-and every design choice below is documented because I had to make it.
 
 ---
 
@@ -69,6 +67,12 @@ assembled by the model from `search_jobs` and `parts_availability`, but that
 means three round trips and a join done in the model's head. It is the question
 the workshop actually asks every morning, so it gets a tool.
 
+**The database path is resolved in one place.** `workshop.db.database_path()`
+reads the `WORKSHOP_DB` environment variable and falls back to `garage.db` in
+the project root. That one indirection is what lets the test suite build a
+fresh throwaway database for every single test, so no test can leak state into
+another and any test can be run on its own.
+
 ## The tools
 
 | Tool | What it answers |
@@ -80,35 +84,71 @@ the workshop actually asks every morning, so it gets a tool.
 | `technician_schedule` | Bookings for a day, with bay, hours and job |
 | `add_job_note` | *(write)* Append a note to a job card |
 
-## Running it
+## Layout
 
-Requires Python 3.10+ and the MCP SDK.
-The pin exists because 2.0 renamed FastMCP with no deprecation period.
-
-```bash
-pip install "mcp[cli]<2"
-python seed_data.py      # creates garage.db
-python test_tools.py     # 38 checks
+```
+src/workshop/
+    db.py          connection handling and where the database lives
+    seed.py        the fictional workshop, and the script that builds it
+    server.py      the six MCP tools
+    schema.sql     eight tables, shipped inside the package
+tests/
+    conftest.py    a freshly seeded database per test
+    test_tools.py  38 tests
+.mcp.json          project-scoped MCP registration, no absolute paths
+pyproject.toml     dependencies, entry points, ruff, mypy, pytest
 ```
 
-To use it from Claude Desktop, add this to `claude_desktop_config.json`:
+## Running it
+
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync             # creates .venv and installs everything, including dev tools
+uv run workshop-seed   # builds garage.db
+uv run pytest          # 38 tests
+```
+
+The MCP SDK is pinned to the 1.x line. Version 2.0 renamed `FastMCP` to
+`MCPServer` and moved its import path with no deprecation period, so this
+server does not run unmodified on 2.x.
+
+### From Claude Code
+
+`.mcp.json` is committed, so from inside a clone of this repo there is nothing
+to configure — Claude Code picks the server up automatically and asks once
+whether to trust it. To register it by hand instead:
+
+```bash
+claude mcp add garage-workshop -- uv run --directory /absolute/path/to/workshop-mcp-server workshop-mcp
+```
+
+### From Claude Desktop
+
+`claude_desktop_config.json` has no notion of a project directory, so this one
+does need an absolute path:
 
 ```json
 {
   "mcpServers": {
     "garage-workshop": {
-      "command": "python",
-      "args": ["/absolute/path/to/garage-agent/server.py"]
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/workshop-mcp-server", "workshop-mcp"]
     }
   }
 }
 ```
 
-Or from Claude Code:
+## Development
 
 ```bash
-claude mcp add garage-workshop -- python /absolute/path/to/garage-agent/server.py
+uv run pytest        # 38 tests
+uv run ruff check .  # lint and import order
+uv run ruff format . # formatting
+uv run mypy          # types, with disallow_untyped_defs
 ```
+
+All four are clean on `main`.
 
 ## Example session
 
@@ -155,6 +195,7 @@ claude mcp add garage-workshop -- python /absolute/path/to/garage-agent/server.p
 ## A note on the data
 
 Every customer, vehicle, registration plate, phone number and email address in
-`seed_data.py` is invented for this project. The phone numbers use Ofcom's
-reserved `07700 900xxx` range and the email addresses use `example.com`, both
-of which exist precisely so that test data cannot collide with a real person.
+`src/workshop/seed.py` is invented for this project. The phone numbers use
+Ofcom's reserved `07700 900xxx` range and the email addresses use
+`example.com`, both of which exist precisely so that test data cannot collide
+with a real person.

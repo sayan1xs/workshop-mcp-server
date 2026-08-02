@@ -1,8 +1,27 @@
-# The database is generated - run `python seed_data.py` to recreate it.
-garage.db
+# Note: .mcp.json is deliberately NOT ignored. It is the project-scoped MCP
+# server registration, it contains no absolute paths and no secrets, and it is
+# what lets anyone who clones this repo get the server working with one command.
 
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-.DS_Store
+*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# The database is generated, not authored. `uv run workshop-seed` rebuilds it
+# identically from seed.py, so committing it would only add churn.
+garage.db
+*.db-journal

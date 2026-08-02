@@ -6,23 +6,23 @@ contract between them: a small set of named tools with typed arguments that
 the model can call, and which return plain data rather than prose.
 
 Every tool here is deliberately narrow. A single "run_sql" tool would be more
-flexible and much worse - it would put the model in charge of correctness and
-hand it unrestricted write access to a live business system. Narrow tools mean
-the queries are reviewed once, by a person, and the model only chooses between
+flexible and much worse - it would put the model in charge of correctness
+against a schema it only knows from a description, and hand it unrestricted
+write access to a live business system. Narrow tools mean the queries are
+written and reviewed once, by a person, and the model only chooses between
 them.
 
-Run with:
-    python server.py
+    uv run workshop-mcp
 """
 
-import os
-import sqlite3
+from __future__ import annotations
+
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "garage.db")
+from workshop.db import connect, rows
 
 mcp = FastMCP("garage-workshop")
 
@@ -31,39 +31,13 @@ OPEN_STATUSES = ("booked", "in_progress", "waiting_parts")
 
 
 # --------------------------------------------------------------------------
-# database helpers
-# --------------------------------------------------------------------------
-def _connect(write: bool = False) -> sqlite3.Connection:
-    """Open the database. Read tools open it read-only so a bug in a query
-    cannot modify anything - only add_job_note asks for write access."""
-    if not os.path.exists(DB_PATH):
-        raise FileNotFoundError(
-            f"{DB_PATH} not found. Run 'python seed_data.py' first."
-        )
-    if write:
-        con = sqlite3.connect(DB_PATH)
-    else:
-        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    return con
-
-
-def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    con = _connect()
-    try:
-        return [dict(r) for r in con.execute(sql, params).fetchall()]
-    finally:
-        con.close()
-
-
-# --------------------------------------------------------------------------
 # read tools
 # --------------------------------------------------------------------------
 @mcp.tool()
 def search_jobs(
-    status: Optional[str] = None,
-    reg: Optional[str] = None,
-    technician: Optional[str] = None,
+    status: str | None = None,
+    reg: str | None = None,
+    technician: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
     """Search job cards in the workshop.
@@ -75,7 +49,8 @@ def search_jobs(
         technician: Technician name, full or partial.
         limit: Maximum number of job cards to return.
     """
-    where, params = [], []
+    where: list[str] = []
+    params: list[Any] = []
 
     if status:
         key = status.strip().lower()
@@ -95,7 +70,7 @@ def search_jobs(
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     params.append(limit)
 
-    jobs = _rows(
+    jobs = rows(
         f"""
         SELECT j.id AS job_card, j.status, j.opened_date, j.description,
                j.estimate, v.reg, v.make, v.model, c.name AS customer,
@@ -114,8 +89,11 @@ def search_jobs(
     # Say plainly when nothing matched. Left to guess, a model will often
     # invent a plausible job card rather than report an empty result.
     if not jobs:
-        return {"count": 0, "jobs": [],
-                "message": "No job cards matched those filters."}
+        return {
+            "count": 0,
+            "jobs": [],
+            "message": "No job cards matched those filters.",
+        }
     return {"count": len(jobs), "jobs": jobs}
 
 
@@ -130,7 +108,7 @@ def vehicle_history(reg: str) -> dict[str, Any]:
         reg: Registration plate, full or partial.
     """
     needle = f"%{reg.replace(' ', '').upper()}%"
-    vehicles = _rows(
+    vehicles = rows(
         """
         SELECT v.id, v.reg, v.make, v.model, v.year, v.mileage,
                c.name AS customer, c.phone
@@ -142,15 +120,16 @@ def vehicle_history(reg: str) -> dict[str, Any]:
     )
 
     if not vehicles:
-        return {"found": False,
-                "message": f"No vehicle on file matching '{reg}'."}
+        return {"found": False, "message": f"No vehicle on file matching '{reg}'."}
     if len(vehicles) > 1:
-        return {"found": False,
-                "message": "That matches more than one vehicle. Be more specific.",
-                "candidates": [v["reg"] for v in vehicles]}
+        return {
+            "found": False,
+            "message": "That matches more than one vehicle. Be more specific.",
+            "candidates": [v["reg"] for v in vehicles],
+        }
 
     vehicle = vehicles[0]
-    history = _rows(
+    history = rows(
         """
         SELECT j.id AS job_card, j.opened_date, j.closed_date, j.status,
                j.description, j.estimate,
@@ -162,7 +141,7 @@ def vehicle_history(reg: str) -> dict[str, Any]:
         """,
         (vehicle["id"],),
     )
-    notes = _rows(
+    notes = rows(
         """
         SELECT n.job_card_id, n.created_at, n.author, n.note
         FROM job_notes n
@@ -173,13 +152,19 @@ def vehicle_history(reg: str) -> dict[str, Any]:
         (vehicle["id"],),
     )
 
-    return {"found": True, "vehicle": vehicle,
-            "visits": len(history), "history": history, "notes": notes}
+    return {
+        "found": True,
+        "vehicle": vehicle,
+        "visits": len(history),
+        "history": history,
+        "notes": notes,
+    }
 
 
 @mcp.tool()
-def parts_availability(query: Optional[str] = None,
-                       only_low_stock: bool = False) -> dict[str, Any]:
+def parts_availability(
+    query: str | None = None, only_low_stock: bool = False
+) -> dict[str, Any]:
     """Look up parts stock.
 
     Args:
@@ -194,7 +179,7 @@ def parts_availability(query: Optional[str] = None,
         where.append("in_stock <= reorder_level")
 
     clause = f"WHERE {' AND '.join(where)}" if where else ""
-    parts = _rows(
+    parts = rows(
         f"""
         SELECT sku, name, in_stock, reorder_level, unit_price, supplier
         FROM parts {clause}
@@ -204,8 +189,7 @@ def parts_availability(query: Optional[str] = None,
     )
 
     if not parts:
-        return {"count": 0, "parts": [],
-                "message": "No parts matched that search."}
+        return {"count": 0, "parts": [], "message": "No parts matched that search."}
 
     for p in parts:
         p["needs_reorder"] = p["in_stock"] <= p["reorder_level"]
@@ -220,7 +204,7 @@ def jobs_blocked_on_parts() -> dict[str, Any]:
     is the reason the assistant is worth having: answering it by hand means
     cross-referencing every open job against the stock list.
     """
-    blocked = _rows(
+    blocked = rows(
         f"""
         SELECT j.id AS job_card, j.status, j.opened_date, j.description,
                v.reg, v.make, v.model, c.name AS customer,
@@ -231,7 +215,7 @@ def jobs_blocked_on_parts() -> dict[str, Any]:
         JOIN customers c ON c.id = v.customer_id
         JOIN job_lines l ON l.job_card_id = j.id AND l.kind = 'part'
         JOIN parts p     ON p.id = l.part_id
-        WHERE j.status IN ({','.join('?' * len(OPEN_STATUSES))})
+        WHERE j.status IN ({",".join("?" * len(OPEN_STATUSES))})
           AND p.in_stock < l.qty
         ORDER BY j.opened_date
         """,
@@ -239,19 +223,22 @@ def jobs_blocked_on_parts() -> dict[str, Any]:
     )
 
     if not blocked:
-        return {"count": 0, "blocked": [],
-                "message": "Nothing is currently held up waiting for parts."}
+        return {
+            "count": 0,
+            "blocked": [],
+            "message": "Nothing is currently held up waiting for parts.",
+        }
 
     for b in blocked:
         b["shortfall"] = b["qty_needed"] - b["in_stock"]
-        b["days_open"] = (date.today()
-                          - date.fromisoformat(b["opened_date"])).days
+        b["days_open"] = (date.today() - date.fromisoformat(b["opened_date"])).days
     return {"count": len(blocked), "blocked": blocked}
 
 
 @mcp.tool()
-def technician_schedule(day: Optional[str] = None,
-                        technician: Optional[str] = None) -> dict[str, Any]:
+def technician_schedule(
+    day: str | None = None, technician: str | None = None
+) -> dict[str, Any]:
     """Workshop bookings for a given day.
 
     Args:
@@ -266,8 +253,10 @@ def technician_schedule(day: Optional[str] = None,
         try:
             target = date.fromisoformat(day.strip())
         except ValueError:
-            return {"error": f"Could not read '{day}' as a date. "
-                             "Use YYYY-MM-DD, 'today' or 'tomorrow'."}
+            return {
+                "error": f"Could not read '{day}' as a date. "
+                "Use YYYY-MM-DD, 'today' or 'tomorrow'."
+            }
 
     where = ["DATE(b.start_time) = ?"]
     params: list[Any] = [target.isoformat()]
@@ -275,7 +264,7 @@ def technician_schedule(day: Optional[str] = None,
         where.append("t.name LIKE ?")
         params.append(f"%{technician}%")
 
-    bookings = _rows(
+    bookings = rows(
         f"""
         SELECT b.start_time, b.end_time, b.bay, t.name AS technician,
                t.grade, v.reg, v.make, v.model,
@@ -286,33 +275,43 @@ def technician_schedule(day: Optional[str] = None,
         JOIN technicians t ON t.id = b.technician_id
         JOIN vehicles v    ON v.id = b.vehicle_id
         LEFT JOIN job_cards j ON j.id = b.job_card_id
-        WHERE {' AND '.join(where)}
+        WHERE {" AND ".join(where)}
         ORDER BY b.start_time, b.bay
         """,
         tuple(params),
     )
 
     if not bookings:
-        return {"day": target.isoformat(), "count": 0, "bookings": [],
-                "message": f"Nothing booked in for {target.isoformat()}."}
+        return {
+            "day": target.isoformat(),
+            "count": 0,
+            "bookings": [],
+            "message": f"Nothing booked in for {target.isoformat()}.",
+        }
 
     hours = 0.0
     for b in bookings:
-        span = (datetime.fromisoformat(b["end_time"])
-                - datetime.fromisoformat(b["start_time"]))
+        span = datetime.fromisoformat(b["end_time"]) - datetime.fromisoformat(
+            b["start_time"]
+        )
         b["hours"] = round(span.total_seconds() / 3600, 2)
         hours += b["hours"]
 
-    return {"day": target.isoformat(), "count": len(bookings),
-            "booked_hours": round(hours, 2), "bookings": bookings}
+    return {
+        "day": target.isoformat(),
+        "count": len(bookings),
+        "booked_hours": round(hours, 2),
+        "bookings": bookings,
+    }
 
 
 # --------------------------------------------------------------------------
 # write tool
 # --------------------------------------------------------------------------
 @mcp.tool()
-def add_job_note(job_card: int, note: str,
-                 author: str = "Workshop assistant") -> dict[str, Any]:
+def add_job_note(
+    job_card: int, note: str, author: str = "Workshop assistant"
+) -> dict[str, Any]:
     """Add a note to a job card.
 
     The only tool here that changes anything. It is narrow on purpose: it can
@@ -328,7 +327,7 @@ def add_job_note(job_card: int, note: str,
     if not text:
         return {"written": False, "error": "The note is empty."}
 
-    con = _connect(write=True)
+    con = connect(write=True)
     try:
         job = con.execute(
             """
@@ -342,8 +341,7 @@ def add_job_note(job_card: int, note: str,
         # Check the job exists before writing, so a mistyped ID fails loudly
         # instead of leaving an orphaned note nobody will ever read.
         if job is None:
-            return {"written": False,
-                    "error": f"No job card {job_card} exists."}
+            return {"written": False, "error": f"No job card {job_card} exists."}
 
         cur = con.execute(
             "INSERT INTO job_notes (job_card_id, created_at, author, note) "
@@ -355,10 +353,22 @@ def add_job_note(job_card: int, note: str,
     finally:
         con.close()
 
-    return {"written": True, "note_id": note_id, "job_card": job_card,
-            "vehicle": job["reg"], "job": job["description"],
-            "status": job["status"], "author": author, "note": text}
+    return {
+        "written": True,
+        "note_id": note_id,
+        "job_card": job_card,
+        "vehicle": job["reg"],
+        "job": job["description"],
+        "status": job["status"],
+        "author": author,
+        "note": text,
+    }
+
+
+def main() -> None:
+    """Entry point for the `workshop-mcp` console script."""
+    mcp.run()
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

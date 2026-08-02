@@ -1,18 +1,24 @@
-"""Create garage.db and fill it with fictional workshop data.
+"""Create the workshop database and fill it with fictional data.
 
 Everything in here is invented. The names, registration plates, phone numbers
-and email addresses do not belong to anyone. Run this once before starting the
-MCP server:
+and email addresses do not belong to anyone: the phone numbers use Ofcom's
+reserved 07700 900xxx range and the addresses use example.com, both of which
+exist precisely so that test data cannot collide with a real person.
 
-    python seed_data.py
+Dates are stored relative to the day the database is built - `d(-9)` means nine
+days ago - so a demonstration never goes stale.
+
+    uv run workshop-seed
 """
 
-import sqlite3
-import os
-from datetime import date, datetime, timedelta
+from __future__ import annotations
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "garage.db")
-SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
+import sqlite3
+from datetime import date, datetime, timedelta
+from importlib.resources import files
+from pathlib import Path
+
+from workshop.db import database_path
 
 TODAY = date.today()
 
@@ -24,11 +30,17 @@ def d(offset_days: int) -> str:
 
 def dt(offset_days: int, hour: int, minute: int = 0) -> str:
     """An ISO datetime `offset_days` from today at the given time."""
-    return datetime.combine(
-        TODAY + timedelta(days=offset_days), datetime.min.time()
-    ).replace(hour=hour, minute=minute).isoformat(timespec="minutes")
+    return (
+        datetime.combine(TODAY + timedelta(days=offset_days), datetime.min.time())
+        .replace(hour=hour, minute=minute)
+        .isoformat(timespec="minutes")
+    )
 
 
+# The fixture data below is tabular: one row of the database per line of source.
+# The formatter would break each tuple across several lines, which is correct for
+# code and unreadable for a table, so it is switched off for this block only.
+# fmt: off
 CUSTOMERS = [
     (1, "Alan Petrie", "07700 900112", "alan.petrie@example.com"),
     (2, "Marta Kalnina", "07700 900318", "m.kalnina@example.com"),
@@ -173,45 +185,73 @@ JOB_NOTES = [
     (5, 1016, d(-3), "Ciara Bannon",
      "Discs lipped, pads at 2mm. Parts in stock, no delay expected."),
 ]
+# fmt: on
+
+
+TABLES = (
+    "customers",
+    "vehicles",
+    "technicians",
+    "parts",
+    "job_cards",
+    "job_lines",
+    "bookings",
+    "job_notes",
+)
+
+
+def _schema() -> str:
+    return (files("workshop") / "schema.sql").read_text(encoding="utf-8")
+
+
+def build_database(path: Path) -> dict[str, int]:
+    """Create the database at `path`, replacing any existing file.
+
+    Returns a row count per table. Taking the path as an argument rather than
+    reading it from the environment is what lets the test suite build a
+    throwaway copy per test instead of sharing one live database.
+    """
+    path = Path(path)
+    if path.exists():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    con = sqlite3.connect(path)
+    try:
+        con.executescript(_schema())
+
+        con.executemany("INSERT INTO customers VALUES (?,?,?,?)", CUSTOMERS)
+        con.executemany("INSERT INTO vehicles VALUES (?,?,?,?,?,?,?)", VEHICLES)
+        con.executemany("INSERT INTO technicians VALUES (?,?,?)", TECHNICIANS)
+        con.executemany("INSERT INTO parts VALUES (?,?,?,?,?,?,?)", PARTS)
+        con.executemany(
+            "INSERT INTO job_cards (id, vehicle_id, technician_id, opened_date, "
+            "closed_date, status, description, estimate) VALUES (?,?,?,?,?,?,?,?)",
+            JOB_CARDS,
+        )
+        con.executemany(
+            "INSERT INTO job_lines (job_card_id, kind, description, part_id, qty, "
+            "unit_price) VALUES (?,?,?,?,?,?)",
+            JOB_LINES,
+        )
+        con.executemany("INSERT INTO bookings VALUES (?,?,?,?,?,?,?)", BOOKINGS)
+        con.executemany("INSERT INTO job_notes VALUES (?,?,?,?,?)", JOB_NOTES)
+        con.commit()
+
+        counts = {
+            table: int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in TABLES
+        }
+    finally:
+        con.close()
+
+    return counts
 
 
 def main() -> None:
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
-
-    con = sqlite3.connect(DB_PATH)
-    with open(SCHEMA_PATH, "r", encoding="utf-8") as fh:
-        con.executescript(fh.read())
-
-    con.executemany("INSERT INTO customers VALUES (?,?,?,?)", CUSTOMERS)
-    con.executemany("INSERT INTO vehicles VALUES (?,?,?,?,?,?,?)", VEHICLES)
-    con.executemany("INSERT INTO technicians VALUES (?,?,?)", TECHNICIANS)
-    con.executemany("INSERT INTO parts VALUES (?,?,?,?,?,?,?)", PARTS)
-    con.executemany(
-        "INSERT INTO job_cards (id, vehicle_id, technician_id, opened_date, "
-        "closed_date, status, description, estimate) VALUES (?,?,?,?,?,?,?,?)",
-        JOB_CARDS,
-    )
-    con.executemany(
-        "INSERT INTO job_lines (job_card_id, kind, description, part_id, qty, unit_price) "
-        "VALUES (?,?,?,?,?,?)",
-        JOB_LINES,
-    )
-    con.executemany("INSERT INTO bookings VALUES (?,?,?,?,?,?,?)", BOOKINGS)
-    con.executemany("INSERT INTO job_notes VALUES (?,?,?,?,?)", JOB_NOTES)
-
-    con.commit()
-
-    counts = {
-        table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in (
-            "customers", "vehicles", "technicians", "parts",
-            "job_cards", "job_lines", "bookings", "job_notes",
-        )
-    }
-    con.close()
-
-    print(f"Created {DB_PATH}")
+    path = database_path()
+    counts = build_database(path)
+    print(f"Created {path}")
     for table, n in counts.items():
         print(f"  {table:<14} {n:>4} rows")
 

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "garage-workshop": {
+      "command": "uv",
+      "args": ["run", "workshop-mcp"]
+    }
+  }
+}
