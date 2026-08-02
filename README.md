@@ -7,6 +7,8 @@ querying the workshop database directly instead of guessing.
 Built as a learning project while working through Anthropic's Model Context
 Protocol material. The database is fictional; the point is the interface
 between the model and the business system, not the data behind it.
+I designed it and made the decisions;the code was written with Claude Code,
+and every design choice below is documented because I had to make it.
 
 ---
 
